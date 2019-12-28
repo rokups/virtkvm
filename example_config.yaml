@@ -2,10 +2,14 @@ libvirt:
   uri: "qemu:///system"
   domain: "nt10"
 http:
+  enabled: true
   address: "192.168.100.1:5001"
   security:
     enabled: true
     secret: "xxxxxxxxxxxxxxxx"
+evdev:
+  enabled: true
+  device: "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd"
 devices:
   # keyboard
   - vendor: 0x046d
@@ -13,6 +17,10 @@ devices:
   # mouse
   - vendor: 0x2516
     product: 0x001a
+  # sound
+  - vendor: 0x0951
+    product: 0x16a4
+    optional: true
 displays:
   # main display
   - bus: 6

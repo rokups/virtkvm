@@ -1,12 +1,14 @@
 import argparse
 import hmac
 import io
-import json
 import subprocess
 import time
 import traceback
+from select import select
+from threading import Thread
 from typing import List, Tuple
 
+import evdev
 import flask
 import libvirt
 import xmltodict
@@ -23,6 +25,7 @@ class HTTPConfig:
         addr = data["address"].split(":")
         self.host: str = addr[0]
         self.port: int = int(addr[1])
+        self.enabled: bool = data["enabled"]
         self._security = data["security"]
 
     @property
@@ -33,6 +36,11 @@ class HTTPConfig:
     def secret(self) -> str:
         return self._security["secret"]
 
+class EvdevConfig:
+    def __init__(self, data: dict):
+        self.enabled: bool = data["enabled"]
+        self.device: bool = data["device"]
+
 class CommandsConfig:
     def __init__(self, data: dict):
         self.host_commands: List[str] = data.get("host", [])
@@ -41,7 +49,9 @@ class CommandsConfig:
 class Config:
     def __init__(self, data: dict):
         self.http = HTTPConfig(data["http"])
+        self.evdev = EvdevConfig(data["evdev"])
         self.devices = [(d["vendor"], d["product"]) for d in data["devices"]]
+        self.devices_essential = [(d["vendor"], d["product"]) for d in data["devices"] if not d.get("optional", False)]
         self.displays = data["displays"]
         self.libvirt = LibvirtConfig(data["libvirt"])
         self.commands = CommandsConfig(data.get("commands", {}))
@@ -117,19 +127,19 @@ class Switch:
     def _call_commands(command: str):
         return subprocess.call(command, shell=True)
 
-    def switch_to_host(self):
+    def switch_to_host(self, skip_optional=False):
         for display in self.config.displays:
             self._call_dccutil(display, display["host"])
         for command in self.config.commands.host_commands:
             self._call_commands(command)
-        self.virt.detach_devices(self.config.devices)
+        self.virt.detach_devices(self.config.devices_essential if skip_optional else self.config.devices)
 
-    def switch_to_guest(self):
+    def switch_to_guest(self, skip_optional=False):
         for display in self.config.displays:
             self._call_dccutil(display, display["guest"])
         for command in self.config.commands.guest_commands:
             self._call_commands(command)
-        self.virt.attach_devices(self.config.devices)
+        self.virt.attach_devices(self.config.devices_essential if skip_optional else self.config.devices)
 
 switch: Switch = None
 app = Flask(__name__)
@@ -154,11 +164,57 @@ def app_switch():
 
     error = None
     try:
-        cases[request.json["to"]]()
+        cases[request.json["to"]](request.json.get("skip_optional", False))
     except:
         error = traceback.format_exc()
 
     return flask.jsonify({"success": True, "error": error})
+
+def evdev_loop(device_name: str):
+    device = evdev.InputDevice(device_name)
+    triggered = False
+    grabbed = False
+    skip_optional = False
+    pressed_keys = {}
+
+    while True:
+        select([device], [], [], 0.25)
+        try:
+            for event in device.read():
+                pressed_keys[event.code] = event.value != 0
+                if not grabbed:
+                    ctrls_pressed = pressed_keys.get(evdev.ecodes.KEY_LEFTCTRL, False) and \
+                                    pressed_keys.get(evdev.ecodes.KEY_RIGHTCTRL, False)
+                    if ctrls_pressed:
+                        triggered = True
+                        skip_optional = pressed_keys.get(evdev.ecodes.KEY_LEFTMETA, False) or \
+                                        pressed_keys.get(evdev.ecodes.KEY_RIGHTMETA, False)
+                    elif triggered and not ctrls_pressed:
+                        triggered = False
+                        if not grabbed:
+                            grabbed = True
+                            switch.switch_to_guest(skip_optional)
+                            continue
+        except BlockingIOError:
+            if grabbed:
+                try:
+                    device.grab()
+                except IOError:
+                    pass
+                else:
+                    device.ungrab()
+                    grabbed = False
+                    switch.switch_to_host()
+        except OSError:
+            while True:
+                try:
+                    device = evdev.InputDevice(device_name)
+                except OSError:
+                    time.sleep(5)
+                else:
+                    print(f'Reconnected to {device_name}')
+                    break
+
 
 def main():
     parser = argparse.ArgumentParser(description="The poor man's KVM switch for libvirt and VFIO users", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -169,4 +225,13 @@ def main():
     config = Config.load(args.config)
     switch = Switch(config)
 
-    app.run(host=config.http.host, port=config.http.port)
+    threads = []
+    if config.http.enabled:
+        print('http thread started')
+        threads.append(Thread(target=app.run, args=(config.http.host, config.http.port, )).start())
+
+    if config.evdev.enabled:
+        print('evdev thread started')
+        threads.append(Thread(target=evdev_loop, args=(config.evdev.device, )).start())
+
+    map(lambda t: t.join(), threads)

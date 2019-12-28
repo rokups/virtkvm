@@ -34,14 +34,14 @@ optional arguments:
 The KVM can be toggled with an HTTP request:
 
 ```sh
-curl -X POST -H 'Content-Type: application/json' -H 'X-Secret: xxxxxxxxxxxxxxxx' -d '{"to": "host"}' http://192.168.100.1:5001/switch
+curl -X POST -H 'Content-Type: application/json' -H 'X-Secret: xxxxxxxxxxxxxxxx' -d '{"to": "host", "skip_optional": true}' http://192.168.100.1:5001/switch
 ```
 
 On Windows, Powershell can be used to send a request to switch the KVM back to
 the host:
 
 ```powershell
-Invoke-RestMethod -Method POST -Uri "http://192.168.100.1:5000/switch" -Headers @{"X-Secret" = "xxxxxxxxxxxxxxxx"} -Body "{`"to`": `"host`"}" -ContentType "application/json"
+Invoke-RestMethod -Method POST -Uri "http://192.168.100.1:5000/switch" -Headers @{"X-Secret" = "xxxxxxxxxxxxxxxx"} -Body "{`"to`": `"host`"`"skip_optional`": true}" -ContentType "application/json"
 ```
 
 You could also add this as a shortcut to your AutoHotkey script. The following
@@ -51,3 +51,5 @@ will toggle the KVM when Win+Shift+~ is pressed:
 #+~::
 Run, PowerShell -WindowStyle Hidden "Invoke-RestMethod -Method POST -Uri 'http://192.168.100.1:5000/switch' @{'X-Secret' = 'xxxxxxxxxxxxxxxx'} -Body '{\"to\": \"host\"}' -ContentType 'application/json'"
 ```
+
+To switch through evdev press `LCTRL+RCTRL` on keyboard device specified in config. Optionally press `META+LCTRL+RCTRL` to toggle devices excluding optional ones.
